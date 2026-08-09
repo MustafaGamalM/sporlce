@@ -1,23 +1,45 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sporcle/main.dart';
+import 'package:sporcle/models/flashcard_deck.dart';
 import 'package:sporcle/models/game_room.dart';
 import 'package:sporcle/models/question_pack.dart';
 
 void main() {
-  testWidgets('shows the game room entry actions', (tester) async {
+  testWidgets('shows game cards', (tester) async {
     await tester.pumpWidget(const MyApp());
 
-    expect(find.text('Game Room'), findsOneWidget);
-    expect(find.text('Host a game'), findsOneWidget);
-    expect(find.text('Join a game'), findsOneWidget);
-    expect(find.textContaining('same question at once'), findsOneWidget);
+    expect(find.text('Choose a Game'), findsOneWidget);
+    expect(find.text('Flashcards'), findsOneWidget);
+    expect(find.text('Room Game'), findsOneWidget);
+    expect(find.text('Study Plan'), findsOneWidget);
+    expect(find.textContaining('lesson into smart'), findsOneWidget);
+  });
+
+  testWidgets('flashcards card opens generator controls', (tester) async {
+    await tester.pumpWidget(const MyApp());
+
+    await tester.tap(find.text('Flashcards'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Lesson source'), findsOneWidget);
+    expect(find.text('Language'), findsOneWidget);
+    expect(find.text('Cards'), findsOneWidget);
+    expect(find.widgetWithText(FilledButton, 'Generate cards'), findsOneWidget);
   });
 
   testWidgets('join form requires a five character code and a name', (
     tester,
   ) async {
+    tester.view.physicalSize = const Size(1360, 900);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
     await tester.pumpWidget(const MyApp());
+
+    await tester.tap(find.text('Room Game'));
+    await tester.pumpAndSettle();
 
     await tester.tap(find.text('Join a game'));
     await tester.pump();
@@ -47,6 +69,9 @@ void main() {
     addTearDown(tester.view.resetDevicePixelRatio);
 
     await tester.pumpWidget(const MyApp());
+
+    await tester.tap(find.text('Room Game'));
+    await tester.pumpAndSettle();
 
     await tester.tap(find.text('Host a game'));
     await tester.pumpAndSettle();
@@ -86,6 +111,33 @@ void main() {
     expect(room.mode, RoomMode.wager);
     expect(room.questionCount, 10);
     expect(room.pack, isA<QuestionPack>());
+  });
+
+  test('parses flashcards response', () {
+    final deck = FlashcardDeck.fromJson({
+      'language': 'en',
+      'count': 2,
+      'cards': [
+        {
+          'type': 'basic',
+          'front': 'Where does photosynthesis occur?',
+          'back': 'Chloroplasts',
+          'hint': null,
+        },
+        {
+          'type': 'cloze',
+          'front': 'Plants produce glucose and ____.',
+          'back': 'oxygen',
+          'hint': 'Gas released by plants',
+        },
+      ],
+    });
+
+    expect(deck.language, 'en');
+    expect(deck.count, 2);
+    expect(deck.cards.first.isCloze, isFalse);
+    expect(deck.cards.last.isCloze, isTrue);
+    expect(deck.cards.last.hint, 'Gas released by plants');
   });
 
   test('parses whole-number JSON values even when decoded as doubles', () {

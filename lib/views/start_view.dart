@@ -9,7 +9,9 @@ import 'package:sporcle/models/question_pack.dart';
 import 'package:sporcle/views/ready_room_view.dart';
 
 class StartView extends StatefulWidget {
-  const StartView({super.key});
+  const StartView({super.key, this.initialMode});
+
+  final RoomMode? initialMode;
 
   @override
   State<StartView> createState() => _StartViewState();
@@ -61,6 +63,10 @@ class _StartViewState extends State<StartView> {
   @override
   void initState() {
     super.initState();
+    _selectedMode = widget.initialMode ?? RoomMode.classic;
+    if (_selectedMode == RoomMode.wager) {
+      _speedScoring = false;
+    }
     _packsCubit = PacksCubit()..getPacks();
   }
 
@@ -199,7 +205,12 @@ class _StartViewState extends State<StartView> {
                           setState(() => _selectedPack = pack);
                         },
                         onModeChanged: (mode) {
-                          setState(() => _selectedMode = mode);
+                          setState(() {
+                            _selectedMode = mode;
+                            if (mode == RoomMode.wager) {
+                              _speedScoring = false;
+                            }
+                          });
                         },
                         onSpeedScoringChanged: (value) {
                           setState(() => _speedScoring = value ?? false);
@@ -438,39 +449,49 @@ class _HostGameCard extends StatelessWidget {
               ],
             ),
             const SizedBox(height: 14),
-            Row(
-              crossAxisAlignment: CrossAxisAlignment.center,
-              children: [
-                SizedBox(
-                  width: 28,
-                  height: 28,
-                  child: Checkbox(
-                    value: speedScoring,
-                    onChanged: onSpeedScoringChanged,
-                    activeColor: AppColors.partyPurple,
-                    materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                  ),
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Text(
-                    'Speed scoring (faster correct answers score more)',
-                    style: textTheme.bodyMedium?.copyWith(
-                      color: AppColors.mutedText,
-                      fontWeight: FontWeight.w800,
+            if (selectedMode == RoomMode.classic) ...[
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.center,
+                children: [
+                  SizedBox(
+                    width: 28,
+                    height: 28,
+                    child: Checkbox(
+                      value: speedScoring,
+                      onChanged: onSpeedScoringChanged,
+                      activeColor: AppColors.partyPurple,
+                      materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
                     ),
                   ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 8),
-            Text(
-              'Turn speed scoring off for revision: every correct answer is worth the same, so nobody is punished for thinking.',
-              style: textTheme.bodyMedium?.copyWith(
-                color: AppColors.mutedText,
-                height: 1.3,
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'Speed scoring (faster correct answers score more)',
+                      style: textTheme.bodyMedium?.copyWith(
+                        color: AppColors.mutedText,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                  ),
+                ],
               ),
-            ),
+              const SizedBox(height: 8),
+              Text(
+                'Turn speed scoring off for revision: every correct answer is worth the same, so nobody is punished for thinking.',
+                style: textTheme.bodyMedium?.copyWith(
+                  color: AppColors.mutedText,
+                  height: 1.3,
+                ),
+              ),
+            ] else
+              Text(
+                'Wager mode ignores speed. Each player spends one token per question, and the token value is the possible point gain.',
+                style: textTheme.bodyMedium?.copyWith(
+                  color: AppColors.mutedText,
+                  height: 1.3,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
             const SizedBox(height: 16),
             if (createError != null) ...[
               Container(

@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:sporcle/app_colors.dart';
-import 'package:sporcle/views/ready_room_view.dart';
+import 'package:sporcle/views/flashcards_view.dart';
 import 'package:sporcle/views/room_entry_view.dart';
 
 class GamesView extends StatefulWidget {
@@ -15,20 +15,20 @@ class _GamesViewState extends State<GamesView> {
     GameItem(
       title: 'Flashcards',
       description:
-      'Create smart study cards and review lessons quickly.',
+          'Turn your lesson into smart question-and-answer cards to review and memorize faster.',
       icon: Icons.style_rounded,
     ),
     GameItem(
       title: 'Room Game',
       description:
-      'Play live quizzes with friends and compete for the top score.',
-      icon: Icons.sports_esports_rounded,
+          'Create or join a multiplayer quiz room and compete with friends in real time.',
+      icon: Icons.groups_rounded,
     ),
     GameItem(
       title: 'Study Plan',
       description:
-      'Organize your subjects and get a study schedule before your exam.',
-      icon: Icons.event_note_rounded,
+          'Build a personalized study schedule based on your subjects, exam date, and available time.',
+      icon: Icons.calendar_month_rounded,
     ),
   ];
   void onBack() {
@@ -36,16 +36,25 @@ class _GamesViewState extends State<GamesView> {
   }
 
   void openGame(GameItem game) {
-    if(game.title =="Room Game" ){
+    if (game.title == 'Flashcards') {
       Navigator.push(
         context,
-        MaterialPageRoute(
-          builder: (context) => const RoomEntryView(),
-        ),
+        MaterialPageRoute<void>(builder: (context) => const FlashcardsView()),
       );
+      return;
     }
-    /// todo add another games
 
+    if (game.title != 'Room Game') {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('This game is not ready yet.')),
+      );
+      return;
+    }
+
+    Navigator.push(
+      context,
+      MaterialPageRoute<void>(builder: (context) => const RoomEntryView()),
+    );
   }
 
   @override
@@ -77,7 +86,7 @@ class _GamesViewState extends State<GamesView> {
               Text(
                 'Pick a game and enter the room to start playing.',
                 style: TextStyle(
-                  color: Colors.black.withOpacity(0.65),
+                  color: Colors.black.withValues(alpha: 0.65),
                   fontSize: 15,
                   height: 1.4,
                 ),
@@ -86,7 +95,7 @@ class _GamesViewState extends State<GamesView> {
               const SizedBox(height: 28),
 
               ...games.map(
-                    (game) => Padding(
+                (game) => Padding(
                   padding: const EdgeInsets.only(bottom: 16),
                   child: _gameCard(game),
                 ),
@@ -108,11 +117,9 @@ class _GamesViewState extends State<GamesView> {
           width: double.infinity,
           padding: const EdgeInsets.all(20),
           decoration: BoxDecoration(
-            color: Colors.black.withOpacity(0.06),
+            color: Colors.black.withValues(alpha: 0.06),
             borderRadius: BorderRadius.circular(20),
-            border: Border.all(
-              color: Colors.black.withOpacity(0.10),
-            ),
+            border: Border.all(color: Colors.black.withValues(alpha: 0.10)),
           ),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -124,7 +131,7 @@ class _GamesViewState extends State<GamesView> {
                     width: 56,
                     height: 56,
                     decoration: BoxDecoration(
-                      color: AppColors.partyPurple.withOpacity(0.15),
+                      color: AppColors.partyPurple.withValues(alpha: 0.15),
                       borderRadius: BorderRadius.circular(16),
                     ),
                     child: Icon(
@@ -152,7 +159,7 @@ class _GamesViewState extends State<GamesView> {
               Text(
                 game.description,
                 style: TextStyle(
-                  color: Colors.black.withOpacity(0.70),
+                  color: Colors.black.withValues(alpha: 0.70),
                   fontSize: 14,
                   height: 1.5,
                 ),
@@ -184,10 +191,7 @@ class _GamesViewState extends State<GamesView> {
                         ),
                       ),
                       SizedBox(width: 8),
-                      Icon(
-                        Icons.arrow_forward_rounded,
-                        size: 19,
-                      ),
+                      Icon(Icons.arrow_forward_rounded, size: 19),
                     ],
                   ),
                 ),

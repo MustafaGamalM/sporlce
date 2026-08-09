@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:sporcle/app_colors.dart';
 import 'package:sporcle/views/games_view.dart';
-import 'package:sporcle/views/room_entry_view.dart';
 
 void main() {
   runApp(const MyApp());
