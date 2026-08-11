@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sporcle/main.dart';
+import 'package:sporcle/models/concept_map.dart';
 import 'package:sporcle/models/flashcard_deck.dart';
 import 'package:sporcle/models/game_room.dart';
 import 'package:sporcle/models/question_pack.dart';
@@ -11,6 +12,7 @@ void main() {
 
     expect(find.text('Choose a Game'), findsOneWidget);
     expect(find.text('Flashcards'), findsOneWidget);
+    expect(find.text('Concept Maps'), findsOneWidget);
     expect(find.text('Room Game'), findsOneWidget);
     expect(find.text('Study Plan'), findsOneWidget);
     expect(find.textContaining('lesson into smart'), findsOneWidget);
@@ -26,6 +28,20 @@ void main() {
     expect(find.text('Language'), findsOneWidget);
     expect(find.text('Cards'), findsOneWidget);
     expect(find.widgetWithText(FilledButton, 'Generate cards'), findsOneWidget);
+  });
+
+  testWidgets('concept maps card opens generator controls', (tester) async {
+    await tester.pumpWidget(const MyApp());
+
+    await tester.tap(find.text('Concept Maps'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Input'), findsOneWidget);
+    expect(find.text('Language'), findsOneWidget);
+    expect(find.text('Max concepts'), findsOneWidget);
+    expect(find.text('Format'), findsOneWidget);
+    expect(find.text('Strict hierarchy'), findsOneWidget);
+    expect(find.widgetWithText(FilledButton, 'Generate map'), findsOneWidget);
   });
 
   testWidgets('join form requires a five character code and a name', (
@@ -138,6 +154,39 @@ void main() {
     expect(deck.cards.first.isCloze, isFalse);
     expect(deck.cards.last.isCloze, isTrue);
     expect(deck.cards.last.hint, 'Gas released by plants');
+  });
+
+  test('parses concept map response', () {
+    final conceptMap = ConceptMap.fromJson({
+      'language': 'en',
+      'concepts': [
+        {'id': 'c1', 'label': 'Photosynthesis'},
+        {'id': 'c2', 'label': 'Green plants'},
+        {'id': 'c3', 'label': 'Food creation'},
+        {'id': 'c4', 'label': 'Sunlight'},
+        {'id': 'c5', 'label': 'Carbon dioxide'},
+        {'id': 'c6', 'label': 'Water'},
+      ],
+      'relationships': [
+        {'from': 'c1', 'to': 'c2', 'type': 'depends_on'},
+        {'from': 'c1', 'to': 'c3', 'type': 'leads_to'},
+        {'from': 'c3', 'to': 'c4', 'type': 'part_of'},
+        {'from': 'c3', 'to': 'c5', 'type': 'part_of'},
+        {'from': 'c3', 'to': 'c6', 'type': 'part_of'},
+      ],
+      'image': {
+        'url':
+            'https://yahiaraouf.pythonanywhere.com/static/generated/f44fd1da5b664002b68d08431f6198bc.svg',
+        'format': 'svg',
+      },
+    });
+
+    expect(conceptMap.language, 'en');
+    expect(conceptMap.concepts, hasLength(6));
+    expect(conceptMap.relationships, hasLength(5));
+    expect(conceptMap.relationships.first.type, 'depends_on');
+    expect(conceptMap.image.format, 'svg');
+    expect(conceptMap.image.url, contains('/static/generated/'));
   });
 
   test('parses whole-number JSON values even when decoded as doubles', () {

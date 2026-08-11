@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:sporcle/app_colors.dart';
+import 'package:sporcle/views/concept_maps_view.dart';
 import 'package:sporcle/views/flashcards_view.dart';
 import 'package:sporcle/views/room_entry_view.dart';
 
@@ -19,17 +20,23 @@ class _GamesViewState extends State<GamesView> {
       icon: Icons.style_rounded,
     ),
     GameItem(
+      title: 'Concept Maps',
+      description:
+          'Transform lesson text into a clean hierarchical concept map with concepts, links, and an SVG preview.',
+      icon: Icons.account_tree_rounded,
+    ),
+    GameItem(
       title: 'Room Game',
       description:
           'Create or join a multiplayer quiz room and compete with friends in real time.',
       icon: Icons.groups_rounded,
     ),
-    GameItem(
-      title: 'Study Plan',
-      description:
-          'Build a personalized study schedule based on your subjects, exam date, and available time.',
-      icon: Icons.calendar_month_rounded,
-    ),
+    // GameItem(
+    //   title: 'Study Plan',
+    //   description:
+    //       'Build a personalized study schedule based on your subjects, exam date, and available time.',
+    //   icon: Icons.calendar_month_rounded,
+    // ),
   ];
   void onBack() {
     Navigator.pop(context);
@@ -40,6 +47,14 @@ class _GamesViewState extends State<GamesView> {
       Navigator.push(
         context,
         MaterialPageRoute<void>(builder: (context) => const FlashcardsView()),
+      );
+      return;
+    }
+
+    if (game.title == 'Concept Maps') {
+      Navigator.push(
+        context,
+        MaterialPageRoute<void>(builder: (context) => const ConceptMapsView()),
       );
       return;
     }
@@ -61,11 +76,7 @@ class _GamesViewState extends State<GamesView> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: AppColors.midnight,
-      appBar: AppBar(
-        elevation: 0,
-        backgroundColor: Colors.transparent,
-        automaticallyImplyLeading: false,
-      ),
+
       body: SafeArea(
         child: SingleChildScrollView(
           padding: const EdgeInsets.fromLTRB(20, 0, 20, 30),

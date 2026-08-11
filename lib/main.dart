@@ -1,8 +1,16 @@
 import 'package:flutter/material.dart';
 import 'package:sporcle/app_colors.dart';
+import 'package:sporcle/services/notification_service.dart';
 import 'package:sporcle/views/games_view.dart';
+import 'package:firebase_core/firebase_core.dart';
+import 'firebase_options.dart';
 
-void main() {
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
+  NotificationServices.initNotification();
+  NotificationServices.handleForegroundMessage();
+
   runApp(const MyApp());
 }
 

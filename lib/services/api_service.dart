@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:http/http.dart' as http;
+import 'package:sporcle/models/concept_map.dart';
 import 'package:sporcle/models/flashcard_deck.dart';
 import 'package:sporcle/models/game_room.dart';
 import 'package:sporcle/models/question_pack.dart';
@@ -12,6 +13,8 @@ class ApiService {
   static const String _baseUrl = 'https://study-room.yahia-lab.org';
   static const String _flashcardsUrl =
       'https://yahiaraouf.pythonanywhere.com/api/v1/flashcards/generate';
+  static const String _conceptMapUrl =
+      'https://yahiaraouf.pythonanywhere.com/api/v1/concept-map/generate';
   static const String _packsUrl = '$_baseUrl/api/v1/game/packs';
   static const String _roomsUrl = '$_baseUrl/api/v1/game/rooms';
   static const String _wsUrl = 'wss://study-room.yahia-lab.org/api/v1/game/ws';
@@ -38,6 +41,28 @@ class ApiService {
     }
 
     return FlashcardDeck.fromJson(json);
+  }
+
+  Future<ConceptMap> generateConceptMap(
+    GenerateConceptMapRequest request,
+  ) async {
+    final response = await _client.post(
+      Uri.parse(_conceptMapUrl),
+      headers: const {'Content-Type': 'application/json'},
+      body: jsonEncode(request.toJson()),
+    );
+
+    final json = jsonDecode(utf8.decode(response.bodyBytes));
+
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw ApiException(_readErrorDetail(json, response.statusCode));
+    }
+
+    if (json is! Map<String, dynamic>) {
+      throw const ApiException('Invalid concept map response');
+    }
+
+    return ConceptMap.fromJson(json);
   }
 
   Future<PacksResponse> getPacks() async {
