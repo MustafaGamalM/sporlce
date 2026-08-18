@@ -21,8 +21,6 @@ class LiveAssistantView extends StatefulWidget {
 }
 
 class _LiveAssistantViewState extends State<LiveAssistantView> {
-  static const Duration _audioStatsUpdateInterval = Duration(milliseconds: 500);
-
   late final ApiService _apiService;
   final TextEditingController _messageController = TextEditingController();
   final List<_ConversationEntry> _conversation = [];
@@ -42,30 +40,28 @@ class _LiveAssistantViewState extends State<LiveAssistantView> {
   bool _isLoadingConfig = true;
   bool _isUploading = false;
   bool _isConnecting = false;
-  bool _isStartingAudio = false;
-  bool _isReady = false;
   bool _isConnected = false;
-  bool _isMicrophoneActive = false;
-  bool _isAudioPlaybackReady = false;
+  bool _isReady = false;
+  bool _audioReady = false;
+  bool _microphoneOpen = false;
+  int _inputRate = 16000;
+  int _outputRate = 24000;
   int _audioFrames = 0;
   int _audioBytes = 0;
-  DateTime? _lastAudioStatsUpdate;
-  int? _inputRate;
-  int? _outputRate;
 
   @override
   void initState() {
     super.initState();
     _apiService = widget._apiService ?? ApiService();
-    _loadConfig();
+    unawaited(_loadConfig());
   }
 
   @override
   void dispose() {
     _messageController.dispose();
-    unawaited(_stopAudioIO());
     unawaited(_socketSubscription?.cancel());
     unawaited(_socket?.close());
+    unawaited(_audioEngine.stop());
     super.dispose();
   }
 
@@ -73,6 +69,7 @@ class _LiveAssistantViewState extends State<LiveAssistantView> {
     setState(() {
       _isLoadingConfig = true;
       _error = null;
+      _status = 'Loading settings...';
     });
 
     try {
@@ -91,14 +88,14 @@ class _LiveAssistantViewState extends State<LiveAssistantView> {
         _inputRate = config.inputSampleRate;
         _outputRate = config.outputSampleRate;
         _status = config.isBusy
-            ? 'All live tutor slots are currently in use.'
-            : 'Ready. Start speaking after connecting.';
+            ? 'All live tutor slots are currently busy.'
+            : 'Ready to start a live tutoring session.';
       });
     } catch (error) {
       if (mounted) {
         setState(() {
           _error = error.toString();
-          _status = 'Could not load settings.';
+          _status = 'Could not load live assistant settings.';
         });
       }
     } finally {
@@ -122,6 +119,7 @@ class _LiveAssistantViewState extends State<LiveAssistantView> {
         'txt',
       ],
     );
+
     if (files.isEmpty) {
       return;
     }
@@ -130,27 +128,27 @@ class _LiveAssistantViewState extends State<LiveAssistantView> {
       _selectedFile = files.first;
       _upload = null;
       _error = null;
+      _status = 'Document selected. It will upload before the call.';
     });
   }
 
   Future<LiveAssistantUpload?> _uploadSelectedDocument() async {
-    final selectedFile = _selectedFile;
-    if (selectedFile == null) {
+    final file = _selectedFile;
+    if (file == null) {
       return null;
     }
 
     setState(() {
       _isUploading = true;
-      _status = 'Uploading document...';
       _error = null;
+      _status = 'Uploading document...';
     });
 
     try {
-      final bytes = await selectedFile.readAsBytes();
       final upload = await _apiService.uploadLiveAssistantDocument(
-        filename: selectedFile.name,
-        path: selectedFile.path,
-        bytes: bytes,
+        filename: file.name,
+        path: file.path,
+        bytes: file.path == null ? await file.readAsBytes() : null,
       );
       if (mounted) {
         setState(() {
@@ -163,7 +161,7 @@ class _LiveAssistantViewState extends State<LiveAssistantView> {
       if (mounted) {
         setState(() {
           _error = error.toString();
-          _status = 'Upload failed.';
+          _status = 'Document upload failed.';
         });
       }
       return null;
@@ -175,78 +173,83 @@ class _LiveAssistantViewState extends State<LiveAssistantView> {
   }
 
   Future<void> _startCall() async {
+    final config = _config;
+    if (config == null) {
+      await _loadConfig();
+    }
     if (_config?.isBusy ?? false) {
-      setState(
-        () => _error = 'Every live tutor slot is in use. Try again soon.',
-      );
+      setState(() {
+        _error = 'Every live tutor slot is in use. Try again in a minute.';
+      });
+      return;
+    }
+
+    if (!await _ensureMicrophonePermission()) {
       return;
     }
 
     setState(() {
       _isConnecting = true;
-      _error = null;
-      _status = 'Establishing connection...';
+      _isConnected = false;
+      _isReady = false;
+      _audioReady = false;
+      _microphoneOpen = false;
       _assistantState = 'connecting';
+      _status = 'Starting live session...';
+      _error = null;
+      _audioFrames = 0;
+      _audioBytes = 0;
       _conversation
         ..clear()
         ..add(
           const _ConversationEntry.system(
-            'Session started. You can type a message once the tutor is ready.',
+            'Session started. Speak when the tutor is listening, or type below.',
           ),
         );
-      _audioFrames = 0;
-      _audioBytes = 0;
-      _lastAudioStatsUpdate = null;
-      _isMicrophoneActive = false;
-      _isAudioPlaybackReady = false;
-      _isStartingAudio = false;
     });
 
-    await _stopAudioIO();
     await _closeSocket();
-    if (!await _ensureMicrophonePermission()) {
+    await _audioEngine.stop();
+
+    final upload = _upload ?? await _uploadSelectedDocument();
+    if (_selectedFile != null && upload == null) {
       if (mounted) {
         setState(() => _isConnecting = false);
       }
       return;
     }
 
-    final upload = _upload ?? await _uploadSelectedDocument();
-    if (_selectedFile != null && upload == null) {
-      setState(() => _isConnecting = false);
-      return;
-    }
-
     try {
       final socket = _apiService.connectToLiveAssistant();
-      await _socketSubscription?.cancel();
       _socket = socket;
       _socketSubscription = socket.messages.listen(
         _handleSocketMessage,
         onError: (error) {
-          if (mounted) {
-            setState(() {
-              _error = error.toString();
-              _status = 'Connection error.';
-              _isConnected = false;
-              _isReady = false;
-              _isStartingAudio = false;
-            });
+          if (!mounted) {
+            return;
           }
-          unawaited(_stopAudioIO());
+          setState(() {
+            _error = error.toString();
+            _status = 'Connection error.';
+            _isConnected = false;
+            _isReady = false;
+            _microphoneOpen = false;
+          });
+          unawaited(_audioEngine.stop());
         },
         onDone: () {
-          if (mounted) {
-            setState(() {
-              _status = 'Disconnected.';
-              _assistantState = 'ended';
-              _isConnected = false;
-              _isReady = false;
-              _isConnecting = false;
-              _isStartingAudio = false;
-            });
+          if (!mounted) {
+            return;
           }
-          unawaited(_stopAudioIO());
+          setState(() {
+            _status = 'Call disconnected.';
+            _assistantState = 'ended';
+            _isConnected = false;
+            _isReady = false;
+            _isConnecting = false;
+            _microphoneOpen = false;
+          });
+          unawaited(_audioEngine.stop());
         },
       );
 
@@ -265,7 +268,7 @@ class _LiveAssistantViewState extends State<LiveAssistantView> {
       }
       setState(() {
         _isConnected = true;
-        _status = 'Connected. Waiting for tutor audio session...';
+        _status = 'Connected. Waiting for tutor readiness...';
       });
     } catch (error) {
       await _closeSocket();
@@ -276,9 +279,6 @@ class _LiveAssistantViewState extends State<LiveAssistantView> {
           _assistantState = 'idle';
           _isConnected = false;
           _isReady = false;
-          _isMicrophoneActive = false;
-          _isAudioPlaybackReady = false;
-          _isStartingAudio = false;
         });
       }
     } finally {
@@ -288,100 +288,19 @@ class _LiveAssistantViewState extends State<LiveAssistantView> {
     }
   }
 
-  void _handleSocketMessage(LiveAssistantIncoming event) {
-    if (!mounted) {
-      return;
-    }
-
-    if (event.type == 'audio') {
-      final bytes = event.audio;
-      if (bytes == null) {
-        return;
-      }
-
-      _audioFrames += 1;
-      _audioBytes += bytes.length;
-      _queueAssistantAudio(bytes);
-      _updateAudioStatsIfNeeded();
-      return;
-    }
-
-    var shouldStartAudio = false;
-    setState(() {
-      switch (event.type) {
-        case 'status':
-          _isReady = event.message == 'ready';
-          _inputRate = event.inputSampleRate ?? _inputRate;
-          _outputRate = event.outputSampleRate ?? _outputRate;
-          _status = _isReady
-              ? 'Ready. Start speaking!'
-              : event.message ?? 'Status update';
-          if (_isReady) {
-            shouldStartAudio = true;
-          }
-        case 'state':
-          _assistantState = event.state ?? 'unknown';
-          _status = _stateStatus(_assistantState);
-        case 'text':
-          final text = event.text;
-          if (text != null) {
-            _conversation.add(_ConversationEntry.assistant(text));
-          }
-        case 'notice':
-          _conversation.add(
-            _ConversationEntry.system(event.message ?? 'Session notice.'),
-          );
-          _status = event.message ?? 'Session notice.';
-        case 'error':
-          _error = _socketErrorMessage(event);
-          _conversation.add(_ConversationEntry.system(_error!));
-          _status = 'The tutor reported an error.';
-        case 'turn_complete':
-          _conversation.add(
-            const _ConversationEntry.system('Tutor turn complete.'),
-          );
-        default:
-          _conversation.add(
-            const _ConversationEntry.system('Unknown server message.'),
-          );
-      }
-    });
-
-    if (shouldStartAudio) {
-      unawaited(_startAudioWhenReady());
-    }
-  }
-
-  void _updateAudioStatsIfNeeded() {
-    final lastUpdate = _lastAudioStatsUpdate;
-    final now = DateTime.now();
-    if (lastUpdate != null &&
-        now.difference(lastUpdate) < _audioStatsUpdateInterval) {
-      return;
-    }
-
-    _lastAudioStatsUpdate = now;
-    if (mounted) {
-      setState(() {});
-    }
-  }
-
   Future<void> _endCall() async {
-    await _stopAudioIO();
+    await _audioEngine.stop();
     await _closeSocket();
     if (!mounted) {
       return;
     }
     setState(() {
-      _socket = null;
-      _socketSubscription = null;
       _isConnected = false;
       _isReady = false;
+      _audioReady = false;
+      _microphoneOpen = false;
       _assistantState = 'ended';
       _status = 'Call ended.';
-      _isMicrophoneActive = false;
-      _isAudioPlaybackReady = false;
-      _isStartingAudio = false;
     });
   }
 
@@ -408,104 +327,135 @@ class _LiveAssistantViewState extends State<LiveAssistantView> {
     return true;
   }
 
-  Future<void> _startAudioWhenReady() async {
-    if (_isStartingAudio || _isMicrophoneActive || !_isConnected || !_isReady) {
+  void _handleSocketMessage(LiveAssistantIncoming event) {
+    if (!mounted) {
       return;
     }
 
-    final socket = _socket;
-    if (socket == null) {
+    if (event.type == 'audio') {
+      final bytes = event.audio;
+      if (bytes == null || bytes.isEmpty) {
+        return;
+      }
+      _audioFrames += 1;
+      _audioBytes += bytes.length;
+      _audioEngine.enqueueAssistantAudio(bytes);
+      setState(() {});
       return;
     }
+
+    var shouldStartAudio = false;
+    var shouldUpdateMic = false;
 
     setState(() {
-      _isStartingAudio = true;
-      _status = 'Starting microphone...';
+      switch (event.type) {
+        case 'status':
+          _isReady = event.message == 'ready';
+          _inputRate = event.inputSampleRate ?? _inputRate;
+          _outputRate = event.outputSampleRate ?? _outputRate;
+          _language = event.language ?? _language;
+          _subject = event.subject ?? _subject;
+          _status = _isReady
+              ? 'Ready. Waiting for your voice.'
+              : event.message ?? 'Status update.';
+          if (_isReady) {
+            _assistantState = 'listening';
+            shouldStartAudio = true;
+            shouldUpdateMic = true;
+          }
+        case 'state':
+          _assistantState = event.state ?? 'unknown';
+          _status = _stateStatus(_assistantState);
+          shouldUpdateMic = true;
+        case 'text':
+          final text = event.text;
+          if (text != null) {
+            _conversation.add(_ConversationEntry.assistant(text));
+          }
+        case 'notice':
+          final message = event.message ?? 'Session notice.';
+          _conversation.add(_ConversationEntry.system(message));
+          _status = message;
+        case 'error':
+          final message = _socketErrorMessage(event);
+          _error = message;
+          _conversation.add(_ConversationEntry.system(message));
+          _status = 'The tutor reported an error.';
+        case 'turn_complete':
+          _conversation.add(
+            const _ConversationEntry.system('Tutor turn complete.'),
+          );
+          shouldUpdateMic = true;
+        default:
+          _conversation.add(
+            const _ConversationEntry.system('Unknown server message.'),
+          );
+      }
     });
 
-    try {
-      await _startAudioIO(socket);
-    } catch (error) {
-      await _closeSocket();
-      if (mounted) {
-        setState(() {
-          _error = 'Audio could not start: $error';
-          _status = 'Audio setup failed.';
-          _assistantState = 'idle';
-          _isConnected = false;
-          _isReady = false;
-          _isMicrophoneActive = false;
-          _isAudioPlaybackReady = false;
-        });
-      }
-    } finally {
-      if (mounted) {
-        setState(() => _isStartingAudio = false);
-      }
+    if (shouldStartAudio) {
+      unawaited(_startAudio());
+    }
+    if (shouldUpdateMic) {
+      unawaited(_syncMicrophoneWithTurn());
     }
   }
 
-  Future<void> _startAudioIO(LiveAssistantSocket socket) async {
-    final inputRate = _inputRate ?? _config?.inputSampleRate ?? 16000;
-    final outputRate = _outputRate ?? _config?.outputSampleRate ?? 24000;
+  Future<void> _startAudio() async {
+    final socket = _socket;
+    if (socket == null || _audioReady) {
+      return;
+    }
 
     try {
       await _audioEngine.start(
-        inputSampleRate: inputRate,
-        outputSampleRate: outputRate,
+        inputSampleRate: _inputRate,
+        outputSampleRate: _outputRate,
         onMicrophoneAudio: socket.sendAudio,
-        onMicrophoneError: (error) {
-          if (!mounted) {
-            return;
+        onMicrophoneChanged: (isOpen) {
+          if (mounted) {
+            setState(() => _microphoneOpen = isOpen);
           }
-          setState(() {
-            _error = 'Microphone stream stopped: $error';
-            _status = 'Microphone stream stopped.';
-            _isMicrophoneActive = false;
-          });
         },
-        onPlaybackError: (error) {
-          if (!mounted) {
-            return;
+        onError: (error) {
+          if (mounted) {
+            setState(() {
+              _error = error.toString();
+              _status = 'Audio stopped unexpectedly.';
+            });
           }
-          setState(() {
-            _error = 'Tutor audio playback stopped: $error';
-            _status = 'Audio playback stopped.';
-            _isAudioPlaybackReady = false;
-          });
         },
       );
-
-      if (mounted) {
-        setState(() {
-          _isMicrophoneActive = true;
-          _isAudioPlaybackReady = true;
-          _status = _isReady ? 'Ready. Start speaking!' : _status;
-        });
+      if (!mounted) {
+        return;
       }
+      setState(() {
+        _audioReady = true;
+        _status = _stateStatus(_assistantState);
+      });
+      await _syncMicrophoneWithTurn();
     } catch (error) {
       if (mounted) {
         setState(() {
           _error = 'Audio could not start: $error';
           _status = 'Audio setup failed.';
-          _isMicrophoneActive = false;
-          _isAudioPlaybackReady = false;
         });
       }
-      rethrow;
+      await _endCall();
     }
   }
 
-  Future<void> _stopAudioIO() async {
-    await _audioEngine.stop();
-  }
-
-  void _queueAssistantAudio(Uint8List bytes) {
-    if (!_isAudioPlaybackReady) {
+  Future<void> _syncMicrophoneWithTurn() async {
+    if (!_audioReady || !_isConnected || !_isReady) {
       return;
     }
-
-    _audioEngine.enqueueAssistantAudio(bytes);
+    final shouldOpen =
+        _assistantState == 'listening' || _assistantState == 'hearing';
+    if (shouldOpen) {
+      await _audioEngine.openMicrophone();
+    } else {
+      await _audioEngine.closeMicrophone();
+    }
   }
 
   void _sendText() {
@@ -526,10 +476,7 @@ class _LiveAssistantViewState extends State<LiveAssistantView> {
   bool get _canSendText {
     return _isConnected &&
         _isReady &&
-        (_assistantState == 'listening' ||
-            _assistantState == 'hearing' ||
-            _assistantState == 'idle' ||
-            _assistantState == 'connecting');
+        (_assistantState == 'listening' || _assistantState == 'hearing');
   }
 
   @override
@@ -544,17 +491,19 @@ class _LiveAssistantViewState extends State<LiveAssistantView> {
           child: ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 1120),
             child: ListView(
-              padding: const EdgeInsets.fromLTRB(24, 28, 24, 32),
+              padding: const EdgeInsets.fromLTRB(24, 18, 24, 32),
               children: [
-                TextButton.icon(
-                  onPressed: () => Navigator.of(context).pop(),
-                  icon: const Icon(Icons.arrow_back, size: 18),
-                  label: const Text('Back'),
-                  style: TextButton.styleFrom(
-                    foregroundColor: AppColors.partyPurple,
-                    padding: EdgeInsets.zero,
-                    alignment: Alignment.centerLeft,
-                    textStyle: const TextStyle(fontWeight: FontWeight.w800),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: TextButton.icon(
+                    onPressed: () => Navigator.of(context).pop(),
+                    icon: const Icon(Icons.arrow_back_rounded, size: 18),
+                    label: const Text('Back'),
+                    style: TextButton.styleFrom(
+                      foregroundColor: AppColors.partyPurple,
+                      padding: EdgeInsets.zero,
+                      textStyle: const TextStyle(fontWeight: FontWeight.w800),
+                    ),
                   ),
                 ),
                 const SizedBox(height: 12),
@@ -567,24 +516,24 @@ class _LiveAssistantViewState extends State<LiveAssistantView> {
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  'Have a real-time tutoring session with Gemini. Upload a document to discuss it directly.',
+                  'Start a real-time tutoring call, optionally with a lesson file.',
                   style: textTheme.titleMedium?.copyWith(
                     color: AppColors.mutedText,
                     height: 1.35,
                   ),
                 ),
-                const SizedBox(height: 24),
-                _SessionSetupCard(
+                const SizedBox(height: 22),
+                _SetupCard(
                   config: _config,
                   language: _language,
                   subject: _subject,
                   selectedFile: _selectedFile,
                   upload: _upload,
+                  error: _error,
                   isLoadingConfig: _isLoadingConfig,
                   isUploading: _isUploading,
                   isConnecting: _isConnecting,
                   isConnected: _isConnected,
-                  error: _error,
                   onLanguageChanged: (value) {
                     if (value != null) {
                       setState(() => _language = value);
@@ -596,33 +545,39 @@ class _LiveAssistantViewState extends State<LiveAssistantView> {
                     }
                   },
                   onPickDocument: _pickDocument,
-                  onStartCall: _isLoadingConfig || _isConnecting || _isConnected
+                  onClearDocument: _isConnected
+                      ? null
+                      : () {
+                          setState(() {
+                            _selectedFile = null;
+                            _upload = null;
+                          });
+                        },
+                  onStart: _isLoadingConfig || _isConnecting || _isConnected
                       ? null
                       : _startCall,
-                  onEndCall: _isConnected ? _endCall : null,
+                  onEnd: _isConnected ? _endCall : null,
                   onRetryConfig: _loadConfig,
                 ),
-                const SizedBox(height: 22),
-                _LiveStatusCard(
+                const SizedBox(height: 18),
+                _StatusCard(
                   status: _status,
                   assistantState: _assistantState,
-                  isReady: _isReady,
                   isConnected: _isConnected,
-                  isUploading: _isUploading,
+                  isReady: _isReady,
+                  microphoneOpen: _microphoneOpen,
+                  audioReady: _audioReady,
                   inputRate: _inputRate,
                   outputRate: _outputRate,
                   audioFrames: _audioFrames,
                   audioBytes: _audioBytes,
-                  isMicrophoneActive: _isMicrophoneActive,
-                  isAudioPlaybackReady: _isAudioPlaybackReady,
                 ),
-                const SizedBox(height: 22),
-                _AssistantStage(
+                const SizedBox(height: 18),
+                _Stage(
                   assistantState: _assistantState,
                   isConnected: _isConnected,
-                  audioFrames: _audioFrames,
+                  microphoneOpen: _microphoneOpen,
                 ),
-                const SizedBox(height: 0),
                 _ConversationPanel(
                   entries: _conversation,
                   messageController: _messageController,
@@ -638,23 +593,24 @@ class _LiveAssistantViewState extends State<LiveAssistantView> {
   }
 }
 
-class _SessionSetupCard extends StatelessWidget {
-  const _SessionSetupCard({
+class _SetupCard extends StatelessWidget {
+  const _SetupCard({
     required this.config,
     required this.language,
     required this.subject,
     required this.selectedFile,
     required this.upload,
+    required this.error,
     required this.isLoadingConfig,
     required this.isUploading,
     required this.isConnecting,
     required this.isConnected,
-    required this.error,
     required this.onLanguageChanged,
     required this.onSubjectChanged,
     required this.onPickDocument,
-    required this.onStartCall,
-    required this.onEndCall,
+    required this.onClearDocument,
+    required this.onStart,
+    required this.onEnd,
     required this.onRetryConfig,
   });
 
@@ -663,21 +619,21 @@ class _SessionSetupCard extends StatelessWidget {
   final String subject;
   final PlatformFile? selectedFile;
   final LiveAssistantUpload? upload;
+  final String? error;
   final bool isLoadingConfig;
   final bool isUploading;
   final bool isConnecting;
   final bool isConnected;
-  final String? error;
   final ValueChanged<String?> onLanguageChanged;
   final ValueChanged<String?> onSubjectChanged;
   final VoidCallback onPickDocument;
-  final VoidCallback? onStartCall;
-  final VoidCallback? onEndCall;
+  final VoidCallback? onClearDocument;
+  final VoidCallback? onStart;
+  final VoidCallback? onEnd;
   final VoidCallback onRetryConfig;
 
   @override
   Widget build(BuildContext context) {
-    final textTheme = Theme.of(context).textTheme;
     final languages = config?.languages ?? const ['en'];
     final subjects = config?.subjects ?? const ['general'];
     final maxUploadMb = config?.maxUploadMb ?? 20;
@@ -697,14 +653,17 @@ class _SessionSetupCard extends StatelessWidget {
           children: [
             LayoutBuilder(
               builder: (context, constraints) {
-                final isCompact = constraints.maxWidth < 660;
+                final isCompact = constraints.maxWidth < 720;
+                final fieldWidth = isCompact
+                    ? constraints.maxWidth
+                    : (constraints.maxWidth - 16) / 2;
+
                 return Wrap(
-                  spacing: 20,
-                  runSpacing: 14,
-                  crossAxisAlignment: WrapCrossAlignment.end,
+                  spacing: 16,
+                  runSpacing: 16,
                   children: [
                     SizedBox(
-                      width: isCompact ? double.infinity : 150,
+                      width: fieldWidth,
                       child: _LabeledField(
                         label: 'Language',
                         child: DropdownButtonFormField<String>(
@@ -713,9 +672,9 @@ class _SessionSetupCard extends StatelessWidget {
                           decoration: _inputDecoration(null),
                           items: languages
                               .map(
-                                (item) => DropdownMenuItem(
-                                  value: item,
-                                  child: Text(_languageLabel(item)),
+                                (value) => DropdownMenuItem<String>(
+                                  value: value,
+                                  child: Text(_languageLabel(value)),
                                 ),
                               )
                               .toList(),
@@ -724,7 +683,7 @@ class _SessionSetupCard extends StatelessWidget {
                       ),
                     ),
                     SizedBox(
-                      width: isCompact ? double.infinity : 210,
+                      width: fieldWidth,
                       child: _LabeledField(
                         label: 'Subject',
                         child: DropdownButtonFormField<String>(
@@ -733,9 +692,9 @@ class _SessionSetupCard extends StatelessWidget {
                           decoration: _inputDecoration(null),
                           items: subjects
                               .map(
-                                (item) => DropdownMenuItem(
-                                  value: item,
-                                  child: Text(_subjectLabel(item)),
+                                (value) => DropdownMenuItem<String>(
+                                  value: value,
+                                  child: Text(_subjectLabel(value)),
                                 ),
                               )
                               .toList(),
@@ -748,53 +707,14 @@ class _SessionSetupCard extends StatelessWidget {
               },
             ),
             const SizedBox(height: 18),
-            Text(
-              'Upload document',
-              style: textTheme.bodyMedium?.copyWith(
-                color: AppColors.mutedText,
-                fontWeight: FontWeight.w900,
-              ),
-            ),
-            const SizedBox(height: 8),
-            Wrap(
-              spacing: 12,
-              runSpacing: 10,
-              crossAxisAlignment: WrapCrossAlignment.center,
-              children: [
-                OutlinedButton.icon(
-                  onPressed: isConnected ? null : onPickDocument,
-                  icon: const Icon(Icons.attach_file_rounded, size: 18),
-                  label: const Text('Choose file'),
-                  style: OutlinedButton.styleFrom(
-                    foregroundColor: AppColors.partyPurple,
-                    side: const BorderSide(color: AppColors.softGray),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                  ),
-                ),
-                Text(
-                  selectedFile?.name ?? 'No file chosen',
-                  style: textTheme.bodyMedium?.copyWith(
-                    color: AppColors.ink,
-                    fontWeight: FontWeight.w700,
-                  ),
-                ),
-                if (upload != null)
-                  _Pill(
-                    upload!.kind.toUpperCase(),
-                    color: const Color(0xFF20C77A),
-                  ),
-              ],
-            ),
-            const SizedBox(height: 14),
-            Text(
-              'The tutor instructions are created by the server. Files can be PDF, image, WebP, HEIC, HEIF, or plain text up to $maxUploadMb MB.',
-              style: textTheme.bodySmall?.copyWith(
-                color: AppColors.mutedText,
-                height: 1.35,
-                fontWeight: FontWeight.w700,
-              ),
+            _DocumentBox(
+              selectedFile: selectedFile,
+              upload: upload,
+              maxUploadMb: maxUploadMb,
+              isUploading: isUploading,
+              isConnected: isConnected,
+              onPickDocument: onPickDocument,
+              onClearDocument: onClearDocument,
             ),
             if (error != null) ...[
               const SizedBox(height: 16),
@@ -807,69 +727,53 @@ class _SessionSetupCard extends StatelessWidget {
                 ),
                 child: Text(
                   error!,
-                  style: textTheme.bodyMedium?.copyWith(
+                  style: const TextStyle(
                     color: AppColors.danger,
-                    fontWeight: FontWeight.w700,
+                    fontWeight: FontWeight.w800,
                   ),
                 ),
               ),
             ],
             const SizedBox(height: 18),
-            Wrap(
-              spacing: 12,
-              runSpacing: 10,
+            Row(
               children: [
-                SizedBox(
-                  width: 150,
+                Expanded(
                   child: FilledButton.icon(
-                    onPressed: onStartCall,
-                    icon: isConnecting || isUploading
-                        ? const SizedBox(
-                            width: 16,
-                            height: 16,
-                            child: CircularProgressIndicator(
-                              strokeWidth: 2,
-                              color: AppColors.white,
-                            ),
-                          )
-                        : const Icon(Icons.call_rounded, size: 18),
+                    onPressed: isConnected ? onEnd : onStart,
+                    icon: Icon(
+                      isConnected ? Icons.call_end_rounded : Icons.mic_rounded,
+                      size: 18,
+                    ),
                     label: Text(
-                      isUploading
+                      isConnected
+                          ? 'End call'
+                          : isUploading
                           ? 'Uploading...'
                           : isConnecting
-                          ? 'Starting...'
-                          : 'Start call',
+                          ? 'Connecting...'
+                          : 'Start live call',
+                    ),
+                    style: FilledButton.styleFrom(
+                      backgroundColor: isConnected
+                          ? AppColors.danger
+                          : AppColors.partyPurple,
                     ),
                   ),
                 ),
-                if (isConnected)
-                  SizedBox(
-                    width: 130,
-                    child: OutlinedButton.icon(
-                      onPressed: onEndCall,
-                      icon: const Icon(Icons.call_end_rounded, size: 18),
-                      label: const Text('End call'),
-                      style: OutlinedButton.styleFrom(
-                        foregroundColor: AppColors.danger,
-                        side: const BorderSide(color: AppColors.softGray),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(8),
-                        ),
-                        minimumSize: const Size.fromHeight(46),
-                      ),
-                    ),
-                  ),
-                if (isLoadingConfig)
+                if (isLoadingConfig) ...[
+                  const SizedBox(width: 14),
                   const SizedBox(
                     width: 24,
                     height: 24,
                     child: CircularProgressIndicator(strokeWidth: 2),
-                  )
-                else if (config == null)
+                  ),
+                ] else if (config == null) ...[
+                  const SizedBox(width: 14),
                   TextButton(
                     onPressed: onRetryConfig,
-                    child: const Text('Retry settings'),
+                    child: const Text('Retry'),
                   ),
+                ],
               ],
             ),
           ],
@@ -879,40 +783,120 @@ class _SessionSetupCard extends StatelessWidget {
   }
 }
 
-class _LiveStatusCard extends StatelessWidget {
-  const _LiveStatusCard({
+class _DocumentBox extends StatelessWidget {
+  const _DocumentBox({
+    required this.selectedFile,
+    required this.upload,
+    required this.maxUploadMb,
+    required this.isUploading,
+    required this.isConnected,
+    required this.onPickDocument,
+    required this.onClearDocument,
+  });
+
+  final PlatformFile? selectedFile;
+  final LiveAssistantUpload? upload;
+  final int maxUploadMb;
+  final bool isUploading;
+  final bool isConnected;
+  final VoidCallback onPickDocument;
+  final VoidCallback? onClearDocument;
+
+  @override
+  Widget build(BuildContext context) {
+    final file = selectedFile;
+    final title = upload?.label ?? file?.name ?? 'No lesson selected';
+    final detail = file == null
+        ? 'Optional: PDF, image, or text up to $maxUploadMb MB.'
+        : 'Selected for upload before the call';
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: AppColors.blueTint,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: AppColors.softGray),
+      ),
+      child: Row(
+        children: [
+          const Icon(
+            Icons.description_rounded,
+            color: AppColors.partyPurple,
+            size: 28,
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: AppColors.ink,
+                    fontWeight: FontWeight.w900,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  isUploading ? 'Uploading...' : detail,
+                  style: const TextStyle(
+                    color: AppColors.mutedText,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 10),
+          IconButton.filledTonal(
+            tooltip: 'Choose lesson',
+            onPressed: isConnected ? null : onPickDocument,
+            icon: const Icon(Icons.attach_file_rounded),
+          ),
+          if (file != null) ...[
+            const SizedBox(width: 6),
+            IconButton(
+              tooltip: 'Remove lesson',
+              onPressed: onClearDocument,
+              icon: const Icon(Icons.close_rounded),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _StatusCard extends StatelessWidget {
+  const _StatusCard({
     required this.status,
     required this.assistantState,
-    required this.isReady,
     required this.isConnected,
-    required this.isUploading,
+    required this.isReady,
+    required this.microphoneOpen,
+    required this.audioReady,
     required this.inputRate,
     required this.outputRate,
     required this.audioFrames,
     required this.audioBytes,
-    required this.isMicrophoneActive,
-    required this.isAudioPlaybackReady,
   });
 
   final String status;
   final String assistantState;
-  final bool isReady;
   final bool isConnected;
-  final bool isUploading;
-  final int? inputRate;
-  final int? outputRate;
+  final bool isReady;
+  final bool microphoneOpen;
+  final bool audioReady;
+  final int inputRate;
+  final int outputRate;
   final int audioFrames;
   final int audioBytes;
-  final bool isMicrophoneActive;
-  final bool isAudioPlaybackReady;
 
   @override
   Widget build(BuildContext context) {
-    final progressValue = isConnected ? 1.0 : null;
-    final rateText = inputRate == null || outputRate == null
-        ? 'Rates pending'
-        : 'Mic $inputRate Hz / tutor $outputRate Hz';
-
     return Card(
       elevation: 1,
       color: AppColors.midnight,
@@ -922,19 +906,10 @@ class _LiveStatusCard extends StatelessWidget {
         side: const BorderSide(color: AppColors.softGray),
       ),
       child: Padding(
-        padding: const EdgeInsets.fromLTRB(22, 18, 22, 18),
+        padding: const EdgeInsets.all(18),
         child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            ClipRRect(
-              borderRadius: BorderRadius.circular(999),
-              child: LinearProgressIndicator(
-                minHeight: 6,
-                value: progressValue,
-                backgroundColor: AppColors.softGray,
-                color: const Color(0xFF20C77A),
-              ),
-            ),
-            const SizedBox(height: 12),
             Row(
               children: [
                 Expanded(
@@ -949,28 +924,22 @@ class _LiveStatusCard extends StatelessWidget {
                 _Pill(isConnected ? 'Connected' : 'Offline'),
               ],
             ),
-            const SizedBox(height: 10),
+            const SizedBox(height: 12),
+            _StatusLine(label: 'Tutor state', trailing: assistantState),
             _StatusLine(
-              label: isUploading ? 'Uploading document' : 'Document upload',
-              trailing: isUploading ? 'In progress' : 'Optional',
+              label: 'Microphone',
+              trailing: microphoneOpen ? 'Open' : 'Closed',
             ),
             _StatusLine(
-              label: 'WebSocket session',
-              trailing: isConnected ? assistantState : 'Not started',
+              label: 'Audio playback',
+              trailing: audioReady
+                  ? '$audioFrames frames, ${audioBytes ~/ 1024} KB'
+                  : 'Pending',
             ),
             _StatusLine(
-              label: 'Microphone stream',
-              trailing: isMicrophoneActive ? 'Sending audio' : 'Not active',
+              label: 'Sample rates',
+              trailing: '$inputRate Hz input / $outputRate Hz output',
             ),
-            _StatusLine(
-              label: 'Tutor audio',
-              trailing: !isAudioPlaybackReady
-                  ? 'Not active'
-                  : audioFrames == 0
-                  ? 'Waiting'
-                  : 'Playing $audioFrames frames, ${audioBytes ~/ 1024} KB',
-            ),
-            _StatusLine(label: 'Audio rates', trailing: rateText),
           ],
         ),
       ),
@@ -978,72 +947,66 @@ class _LiveStatusCard extends StatelessWidget {
   }
 }
 
-class _AssistantStage extends StatelessWidget {
-  const _AssistantStage({
+class _Stage extends StatelessWidget {
+  const _Stage({
     required this.assistantState,
     required this.isConnected,
-    required this.audioFrames,
+    required this.microphoneOpen,
   });
 
   final String assistantState;
   final bool isConnected;
-  final int audioFrames;
+  final bool microphoneOpen;
 
   @override
   Widget build(BuildContext context) {
     final isSpeaking = assistantState == 'speaking';
+    final isThinking = assistantState == 'thinking';
     final title = !isConnected
-        ? 'Start a session'
+        ? 'Ready when you are'
         : isSpeaking
-        ? 'Speaking, please wait'
-        : assistantState == 'thinking'
-        ? 'Thinking'
-        : 'Listening, go ahead';
+        ? 'Tutor is speaking'
+        : isThinking
+        ? 'Tutor is thinking'
+        : microphoneOpen
+        ? 'Listening now'
+        : 'Waiting';
 
     return Container(
       height: 180,
-      decoration: BoxDecoration(
-        color: const Color(0xFF142033),
-        borderRadius: const BorderRadius.vertical(top: Radius.circular(8)),
-        boxShadow: [
-          BoxShadow(
-            color: AppColors.ink.withAlpha(28),
-            blurRadius: 18,
-            offset: const Offset(0, 8),
-          ),
-        ],
+      decoration: const BoxDecoration(
+        color: Color(0xFF142033),
+        borderRadius: BorderRadius.vertical(top: Radius.circular(8)),
       ),
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
           CircleAvatar(
-            radius: 26,
+            radius: 30,
             backgroundColor: isSpeaking
                 ? AppColors.partyPurple
+                : isThinking
+                ? const Color(0xFFF0A01F)
                 : const Color(0xFF20C77A),
             child: Icon(
-              isSpeaking ? Icons.volume_up_rounded : Icons.mic_rounded,
+              isSpeaking
+                  ? Icons.volume_up_rounded
+                  : isThinking
+                  ? Icons.psychology_rounded
+                  : Icons.mic_rounded,
               color: AppColors.white,
+              size: 28,
             ),
           ),
-          const SizedBox(height: 16),
+          const SizedBox(height: 14),
           Text(
             title,
             style: const TextStyle(
               color: AppColors.white,
               fontWeight: FontWeight.w900,
+              fontSize: 17,
             ),
           ),
-          if (audioFrames > 0) ...[
-            const SizedBox(height: 10),
-            Text(
-              '$audioFrames audio frames received',
-              style: TextStyle(
-                color: AppColors.white.withValues(alpha: 0.72),
-                fontWeight: FontWeight.w700,
-              ),
-            ),
-          ],
         ],
       ),
     );
@@ -1083,7 +1046,7 @@ class _ConversationPanel extends StatelessWidget {
               child: entries.isEmpty
                   ? Center(
                       child: Text(
-                        'Session notes will appear here.',
+                        'Session messages will appear here.',
                         style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                           color: AppColors.mutedText,
                           fontWeight: FontWeight.w700,
@@ -1107,15 +1070,15 @@ class _ConversationPanel extends StatelessWidget {
                     enabled: canSendText,
                     decoration: _inputDecoration(
                       canSendText
-                          ? 'Or type a message here...'
-                          : 'Connect and wait for listening...',
+                          ? 'Type a message...'
+                          : 'Wait for listening...',
                     ),
                     onSubmitted: (_) => onSendText(),
                   ),
                 ),
                 const SizedBox(width: 10),
                 SizedBox(
-                  width: 92,
+                  width: 98,
                   child: FilledButton.icon(
                     onPressed: canSendText ? onSendText : null,
                     icon: const Icon(Icons.send_rounded, size: 17),
@@ -1209,17 +1172,21 @@ class _StatusLine extends StatelessWidget {
           Expanded(
             child: Text(
               label,
-              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+              style: const TextStyle(
                 color: AppColors.ink,
                 fontWeight: FontWeight.w700,
               ),
             ),
           ),
-          Text(
-            trailing,
-            style: Theme.of(context).textTheme.bodySmall?.copyWith(
-              color: AppColors.mutedText,
-              fontWeight: FontWeight.w700,
+          Flexible(
+            child: Text(
+              trailing,
+              textAlign: TextAlign.right,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                color: AppColors.mutedText,
+                fontWeight: FontWeight.w700,
+              ),
             ),
           ),
         ],
@@ -1229,23 +1196,22 @@ class _StatusLine extends StatelessWidget {
 }
 
 class _Pill extends StatelessWidget {
-  const _Pill(this.label, {this.color = AppColors.partyPurple});
+  const _Pill(this.label);
 
   final String label;
-  final Color color;
 
   @override
   Widget build(BuildContext context) {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
       decoration: BoxDecoration(
-        color: color.withAlpha(26),
+        color: AppColors.partyPurple.withAlpha(26),
         borderRadius: BorderRadius.circular(8),
       ),
       child: Text(
         label,
-        style: TextStyle(
-          color: color,
+        style: const TextStyle(
+          color: AppColors.partyPurple,
           fontWeight: FontWeight.w900,
           fontSize: 12,
         ),
@@ -1256,44 +1222,39 @@ class _Pill extends StatelessWidget {
 
 typedef _AudioBytesHandler = void Function(Uint8List bytes);
 typedef _AudioErrorHandler = void Function(Object error);
+typedef _MicrophoneStateHandler = void Function(bool isOpen);
 
 class _LiveAssistantAudioEngine {
-  static const int _recorderBufferSize = 4096;
+  static const int _recorderBufferSize = 3200;
   static const int _playerBufferSize = 65536;
-  static const int _maxPrebufferBytes = 96000;
-  static const Duration _initialPrebuffer = Duration(milliseconds: 220);
-
-  final List<Uint8List> _playbackQueue = [];
 
   FlutterSoundRecorder? _recorder;
   FlutterSoundPlayer? _player;
-  StreamController<Uint8List>? _microphoneStreamController;
+  StreamController<Uint8List>? _microphoneStream;
   StreamSubscription<Uint8List>? _microphoneSubscription;
-  _AudioErrorHandler? _onPlaybackError;
-  bool _hasStartedPlayback = false;
+  _MicrophoneStateHandler? _onMicrophoneChanged;
+  _AudioErrorHandler? _onError;
   bool _isStopping = false;
-  int _queuedPlaybackBytes = 0;
-  int _outputSampleRate = 24000;
-  int _generation = 0;
+  bool _microphoneOpen = false;
+  int _inputSampleRate = 16000;
 
   Future<void> start({
     required int inputSampleRate,
     required int outputSampleRate,
     required _AudioBytesHandler onMicrophoneAudio,
-    required _AudioErrorHandler onMicrophoneError,
-    required _AudioErrorHandler onPlaybackError,
+    required _MicrophoneStateHandler onMicrophoneChanged,
+    required _AudioErrorHandler onError,
   }) async {
     await stop();
-    _generation += 1;
-    final generation = _generation;
     _isStopping = false;
-    _hasStartedPlayback = false;
-    _onPlaybackError = onPlaybackError;
-    _outputSampleRate = outputSampleRate;
+    _microphoneOpen = false;
+    _inputSampleRate = inputSampleRate;
+    _onMicrophoneChanged = onMicrophoneChanged;
+    _onError = onError;
 
     final player = FlutterSoundPlayer(logLevel: Level.error);
     final recorder = FlutterSoundRecorder(logLevel: Level.error);
-    final streamController = StreamController<Uint8List>();
+    final microphoneStream = StreamController<Uint8List>();
     StreamSubscription<Uint8List>? microphoneSubscription;
 
     try {
@@ -1307,143 +1268,118 @@ class _LiveAssistantAudioEngine {
         bufferSize: _playerBufferSize,
       );
 
-      microphoneSubscription = streamController.stream.listen((bytes) {
-        if (_isStopping || generation != _generation || bytes.isEmpty) {
+      microphoneSubscription = microphoneStream.stream.listen((bytes) {
+        if (_isStopping || !_microphoneOpen || bytes.isEmpty) {
           return;
         }
         try {
           onMicrophoneAudio(_pcm16Aligned(bytes));
         } catch (error) {
-          onMicrophoneError(error);
+          onError(error);
         }
-      }, onError: onMicrophoneError);
+      }, onError: onError);
 
       await recorder.openRecorder();
       recorder.setLogLevel(Level.error);
-      await recorder.startRecorder(
-        codec: Codec.pcm16,
-        toStream: streamController.sink,
-        sampleRate: inputSampleRate,
-        numChannels: 1,
-        bufferSize: _recorderBufferSize,
-        enableVoiceProcessing: true,
-        enableNoiseSuppression: true,
-        enableEchoCancellation: true,
-      );
-
-      if (generation != _generation || _isStopping) {
-        await microphoneSubscription.cancel();
-        await recorder.stopRecorder();
-        await recorder.closeRecorder();
-        await player.stopPlayer();
-        await player.closePlayer();
-        await streamController.close();
-        return;
-      }
 
       _player = player;
       _recorder = recorder;
-      _microphoneStreamController = streamController;
+      _microphoneStream = microphoneStream;
       _microphoneSubscription = microphoneSubscription;
-    } catch (error) {
+    } catch (_) {
       await microphoneSubscription?.cancel();
-      await streamController.close();
+      await microphoneStream.close();
       await recorder.closeRecorder();
       await player.closePlayer();
-      _resetPlaybackQueue();
       rethrow;
     }
   }
 
-  Future<void> stop() async {
-    _generation += 1;
-    _isStopping = true;
+  Future<void> openMicrophone() async {
     final recorder = _recorder;
-    final player = _player;
-    final streamController = _microphoneStreamController;
-    final microphoneSubscription = _microphoneSubscription;
-    _recorder = null;
-    _player = null;
-    _microphoneStreamController = null;
-    _microphoneSubscription = null;
-    _onPlaybackError = null;
-    _hasStartedPlayback = false;
-    _resetPlaybackQueue();
-
-    await microphoneSubscription?.cancel();
-    if (recorder != null) {
-      await recorder.stopRecorder();
-      await recorder.closeRecorder();
+    final stream = _microphoneStream;
+    if (_isStopping || recorder == null || stream == null || _microphoneOpen) {
+      return;
     }
-    await streamController?.close();
-    if (player != null) {
-      await player.stopPlayer();
-      await player.closePlayer();
+
+    await recorder.startRecorder(
+      codec: Codec.pcm16,
+      toStream: stream.sink,
+      sampleRate: _inputSampleRate,
+      numChannels: 1,
+      bufferSize: _recorderBufferSize,
+      enableVoiceProcessing: true,
+      enableNoiseSuppression: true,
+      enableEchoCancellation: true,
+    );
+    _microphoneOpen = true;
+    _onMicrophoneChanged?.call(true);
+  }
+
+  Future<void> closeMicrophone() async {
+    final recorder = _recorder;
+    if (recorder == null || !_microphoneOpen) {
+      return;
+    }
+
+    try {
+      await recorder.stopRecorder();
+    } catch (error) {
+      if (!_isStopping) {
+        _onError?.call(error);
+      }
+    } finally {
+      _microphoneOpen = false;
+      _onMicrophoneChanged?.call(false);
     }
   }
 
   void enqueueAssistantAudio(Uint8List bytes) {
-    if (_isStopping || _player == null || bytes.isEmpty) {
+    final sink = _player?.uint8ListSink;
+    if (_isStopping || sink == null) {
       return;
     }
 
-    final alignedBytes = _pcm16Aligned(bytes);
-    if (alignedBytes.isEmpty) {
+    final aligned = _pcm16Aligned(bytes);
+    if (aligned.isEmpty) {
       return;
     }
-
-    _playbackQueue.add(alignedBytes);
-    _queuedPlaybackBytes += alignedBytes.length;
-
-    if (!_hasStartedPlayback && _queuedPlaybackBytes < _initialPrebufferBytes) {
-      if (_queuedPlaybackBytes > _maxPrebufferBytes) {
-        _flushPlaybackQueue();
-      }
-      return;
-    }
-
-    _flushPlaybackQueue();
-  }
-
-  void _resetPlaybackQueue() {
-    _playbackQueue.clear();
-    _queuedPlaybackBytes = 0;
-    _hasStartedPlayback = false;
-  }
-
-  int get _initialPrebufferBytes {
-    final bytes =
-        _outputSampleRate * 2 * _initialPrebuffer.inMilliseconds ~/ 1000;
-    return bytes.isEven ? bytes : bytes + 1;
-  }
-
-  void _flushPlaybackQueue() {
-    final player = _player;
-    final sink = player?.uint8ListSink;
-    if (_isStopping ||
-        player == null ||
-        sink == null ||
-        _queuedPlaybackBytes == 0) {
-      return;
-    }
-
-    final output = Uint8List(_queuedPlaybackBytes);
-    var offset = 0;
-    for (final chunk in _playbackQueue) {
-      output.setRange(offset, offset + chunk.length, chunk);
-      offset += chunk.length;
-    }
-
-    _playbackQueue.clear();
-    _queuedPlaybackBytes = 0;
-    _hasStartedPlayback = true;
 
     try {
-      sink.add(output);
+      sink.add(aligned);
     } catch (error) {
       if (!_isStopping) {
-        _onPlaybackError?.call(error);
+        _onError?.call(error);
       }
+    }
+  }
+
+  Future<void> stop() async {
+    _isStopping = true;
+    final recorder = _recorder;
+    final player = _player;
+    final stream = _microphoneStream;
+    final subscription = _microphoneSubscription;
+
+    _recorder = null;
+    _player = null;
+    _microphoneStream = null;
+    _microphoneSubscription = null;
+    _onMicrophoneChanged = null;
+    _onError = null;
+    _microphoneOpen = false;
+
+    await subscription?.cancel();
+    if (recorder != null) {
+      if (!recorder.isStopped) {
+        await recorder.stopRecorder();
+      }
+      await recorder.closeRecorder();
+    }
+    await stream?.close();
+    if (player != null) {
+      await player.stopPlayer();
+      await player.closePlayer();
     }
   }
 
@@ -1475,10 +1411,13 @@ enum _ConversationRole { assistant, student, system }
 
 String _stateStatus(String state) {
   return switch (state) {
-    'listening' => 'Ready. Start speaking!',
+    'listening' => 'Listening. You can speak now.',
     'hearing' => 'The tutor is hearing you.',
-    'thinking' => 'The tutor is thinking.',
-    'speaking' => 'The tutor is speaking.',
+    'thinking' => 'The tutor is thinking. Microphone is closed.',
+    'speaking' => 'The tutor is speaking. Microphone is closed.',
+    'connecting' => 'Connecting...',
+    'idle' => 'Ready to start a live tutoring session.',
+    'ended' => 'Call ended.',
     _ => 'Session state: $state',
   };
 }

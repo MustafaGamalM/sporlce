@@ -55,10 +55,13 @@ void main() {
     );
     await tester.pump();
 
-    expect(find.text('Upload document'), findsOneWidget);
+    expect(find.text('No lesson selected'), findsOneWidget);
     expect(find.text('Language'), findsOneWidget);
     expect(find.text('Subject'), findsOneWidget);
-    expect(find.widgetWithText(FilledButton, 'Start call'), findsOneWidget);
+    expect(
+      find.widgetWithText(FilledButton, 'Start live call'),
+      findsOneWidget,
+    );
   });
 
   testWidgets('join form requires a five character code and a name', (
