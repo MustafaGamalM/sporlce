@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:sporcle/app_colors.dart';
 import 'package:sporcle/views/concept_maps_view.dart';
 import 'package:sporcle/views/flashcards_view.dart';
+import 'package:sporcle/views/live_assistant_view.dart';
 import 'package:sporcle/views/room_entry_view.dart';
 
 class GamesView extends StatefulWidget {
@@ -31,6 +32,12 @@ class _GamesViewState extends State<GamesView> {
           'Create or join a multiplayer quiz room and compete with friends in real time.',
       icon: Icons.groups_rounded,
     ),
+    GameItem(
+      title: 'Live Assistant',
+      description:
+          'Start a live Gemini tutoring session, upload a lesson, and discuss it through a real-time connection.',
+      icon: Icons.record_voice_over_rounded,
+    ),
     // GameItem(
     //   title: 'Study Plan',
     //   description:
@@ -55,6 +62,16 @@ class _GamesViewState extends State<GamesView> {
       Navigator.push(
         context,
         MaterialPageRoute<void>(builder: (context) => const ConceptMapsView()),
+      );
+      return;
+    }
+
+    if (game.title == 'Live Assistant') {
+      Navigator.push(
+        context,
+        MaterialPageRoute<void>(
+          builder: (context) => const LiveAssistantView(),
+        ),
       );
       return;
     }

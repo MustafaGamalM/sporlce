@@ -4,7 +4,10 @@ import 'package:sporcle/main.dart';
 import 'package:sporcle/models/concept_map.dart';
 import 'package:sporcle/models/flashcard_deck.dart';
 import 'package:sporcle/models/game_room.dart';
+import 'package:sporcle/models/live_assistant.dart';
 import 'package:sporcle/models/question_pack.dart';
+import 'package:sporcle/services/api_service.dart';
+import 'package:sporcle/views/live_assistant_view.dart';
 
 void main() {
   testWidgets('shows game cards', (tester) async {
@@ -14,7 +17,7 @@ void main() {
     expect(find.text('Flashcards'), findsOneWidget);
     expect(find.text('Concept Maps'), findsOneWidget);
     expect(find.text('Room Game'), findsOneWidget);
-    expect(find.text('Study Plan'), findsOneWidget);
+    expect(find.text('Live Assistant'), findsOneWidget);
     expect(find.textContaining('lesson into smart'), findsOneWidget);
   });
 
@@ -42,6 +45,20 @@ void main() {
     expect(find.text('Format'), findsOneWidget);
     expect(find.text('Strict hierarchy'), findsOneWidget);
     expect(find.widgetWithText(FilledButton, 'Generate map'), findsOneWidget);
+  });
+
+  testWidgets('live assistant screen shows session controls', (tester) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: LiveAssistantView(apiService: _FakeLiveAssistantApiService()),
+      ),
+    );
+    await tester.pump();
+
+    expect(find.text('Upload document'), findsOneWidget);
+    expect(find.text('Language'), findsOneWidget);
+    expect(find.text('Subject'), findsOneWidget);
+    expect(find.widgetWithText(FilledButton, 'Start call'), findsOneWidget);
   });
 
   testWidgets('join form requires a five character code and a name', (
@@ -251,4 +268,40 @@ void main() {
     expect(pack.subject, 'أحياء');
     expect(pack.grade, 'الصف الثالث الثانوي');
   });
+  test('parses live assistant JSON audio chunks', () {
+    final incoming = LiveAssistantIncoming.fromJson({
+      'type': 'audio',
+      'audio_base64': 'AQIDBA==',
+    });
+
+    expect(incoming.type, 'audio');
+    expect(incoming.audio, [1, 2, 3, 4]);
+  });
+}
+
+class _FakeLiveAssistantApiService extends ApiService {
+  @override
+  Future<LiveAssistantConfig> getLiveAssistantConfig() async {
+    return const LiveAssistantConfig(
+      model: 'gemini-live',
+      inputSampleRate: 16000,
+      outputSampleRate: 24000,
+      maxUploadMb: 20,
+      accepts: [
+        'application/pdf',
+        'image/jpeg',
+        'image/png',
+        'image/webp',
+        'image/heic',
+        'image/heif',
+        'text/plain',
+      ],
+      languages: ['en', 'ar'],
+      subjects: ['general', 'biology', 'chemistry'],
+      sessionsOpen: 0,
+      maxConcurrentSessions: 4,
+      idleSeconds: 120,
+      maxSessionSeconds: 1200,
+    );
+  }
 }

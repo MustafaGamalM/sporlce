@@ -16,6 +16,8 @@
 	<string>6.0</string>
 	<key>CFBundleName</key>
 	<string>sporcle</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>The live assistant uses your microphone during tutoring calls.</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
