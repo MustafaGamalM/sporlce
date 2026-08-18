@@ -31,6 +31,8 @@ class _LiveAssistantViewState extends State<LiveAssistantView> {
   PlatformFile? _selectedFile;
   LiveAssistantSocket? _socket;
   StreamSubscription<LiveAssistantIncoming>? _socketSubscription;
+  Timer? _playbackUnlockTimer;
+  DateTime? _playbackLockedUntil;
 
   String _language = 'en';
   String _subject = 'general';
@@ -44,6 +46,7 @@ class _LiveAssistantViewState extends State<LiveAssistantView> {
   bool _isReady = false;
   bool _audioReady = false;
   bool _microphoneOpen = false;
+  bool _assistantAudioPlaying = false;
   int _inputRate = 16000;
   int _outputRate = 24000;
   int _audioFrames = 0;
@@ -59,6 +62,7 @@ class _LiveAssistantViewState extends State<LiveAssistantView> {
   @override
   void dispose() {
     _messageController.dispose();
+    _playbackUnlockTimer?.cancel();
     unawaited(_socketSubscription?.cancel());
     unawaited(_socket?.close());
     unawaited(_audioEngine.stop());
@@ -194,6 +198,9 @@ class _LiveAssistantViewState extends State<LiveAssistantView> {
       _isReady = false;
       _audioReady = false;
       _microphoneOpen = false;
+      _assistantAudioPlaying = false;
+      _playbackLockedUntil = null;
+      _playbackUnlockTimer?.cancel();
       _assistantState = 'connecting';
       _status = 'Starting live session...';
       _error = null;
@@ -234,7 +241,9 @@ class _LiveAssistantViewState extends State<LiveAssistantView> {
             _isConnected = false;
             _isReady = false;
             _microphoneOpen = false;
+            _assistantAudioPlaying = false;
           });
+          _playbackUnlockTimer?.cancel();
           unawaited(_audioEngine.stop());
         },
         onDone: () {
@@ -248,7 +257,9 @@ class _LiveAssistantViewState extends State<LiveAssistantView> {
             _isReady = false;
             _isConnecting = false;
             _microphoneOpen = false;
+            _assistantAudioPlaying = false;
           });
+          _playbackUnlockTimer?.cancel();
           unawaited(_audioEngine.stop());
         },
       );
@@ -299,6 +310,9 @@ class _LiveAssistantViewState extends State<LiveAssistantView> {
       _isReady = false;
       _audioReady = false;
       _microphoneOpen = false;
+      _assistantAudioPlaying = false;
+      _playbackLockedUntil = null;
+      _playbackUnlockTimer?.cancel();
       _assistantState = 'ended';
       _status = 'Call ended.';
     });
@@ -339,6 +353,7 @@ class _LiveAssistantViewState extends State<LiveAssistantView> {
       }
       _audioFrames += 1;
       _audioBytes += bytes.length;
+      _holdMicrophoneForAssistantAudio(bytes);
       _audioEngine.enqueueAssistantAudio(bytes);
       setState(() {});
       return;
@@ -450,12 +465,47 @@ class _LiveAssistantViewState extends State<LiveAssistantView> {
       return;
     }
     final shouldOpen =
-        _assistantState == 'listening' || _assistantState == 'hearing';
+        !_assistantAudioPlaying &&
+        (_assistantState == 'listening' || _assistantState == 'hearing');
     if (shouldOpen) {
       await _audioEngine.openMicrophone();
     } else {
       await _audioEngine.closeMicrophone();
     }
+  }
+
+  void _holdMicrophoneForAssistantAudio(Uint8List bytes) {
+    final bytesPerSecond = (_outputRate <= 0 ? 24000 : _outputRate) * 2;
+    final audioDuration = Duration(
+      microseconds:
+          bytes.length * Duration.microsecondsPerSecond ~/ bytesPerSecond,
+    );
+    final now = DateTime.now();
+    final currentLock = _playbackLockedUntil;
+    final lockStart = currentLock != null && currentLock.isAfter(now)
+        ? currentLock
+        : now;
+    final audioEndsAt = lockStart.add(audioDuration);
+    final unlockAt = audioEndsAt.add(const Duration(milliseconds: 180));
+
+    _playbackLockedUntil = audioEndsAt;
+    _playbackUnlockTimer?.cancel();
+    _playbackUnlockTimer = Timer(unlockAt.difference(now), () {
+      if (!mounted || _playbackLockedUntil != audioEndsAt) {
+        return;
+      }
+      setState(() {
+        _assistantAudioPlaying = false;
+      });
+      unawaited(_syncMicrophoneWithTurn());
+    });
+
+    if (!_assistantAudioPlaying) {
+      setState(() {
+        _assistantAudioPlaying = true;
+      });
+    }
+    unawaited(_audioEngine.closeMicrophone());
   }
 
   void _sendText() {
@@ -476,6 +526,7 @@ class _LiveAssistantViewState extends State<LiveAssistantView> {
   bool get _canSendText {
     return _isConnected &&
         _isReady &&
+        !_assistantAudioPlaying &&
         (_assistantState == 'listening' || _assistantState == 'hearing');
   }
 
@@ -577,6 +628,7 @@ class _LiveAssistantViewState extends State<LiveAssistantView> {
                   assistantState: _assistantState,
                   isConnected: _isConnected,
                   microphoneOpen: _microphoneOpen,
+                  assistantAudioPlaying: _assistantAudioPlaying,
                 ),
                 _ConversationPanel(
                   entries: _conversation,
@@ -952,15 +1004,17 @@ class _Stage extends StatelessWidget {
     required this.assistantState,
     required this.isConnected,
     required this.microphoneOpen,
+    required this.assistantAudioPlaying,
   });
 
   final String assistantState;
   final bool isConnected;
   final bool microphoneOpen;
+  final bool assistantAudioPlaying;
 
   @override
   Widget build(BuildContext context) {
-    final isSpeaking = assistantState == 'speaking';
+    final isSpeaking = assistantState == 'speaking' || assistantAudioPlaying;
     final isThinking = assistantState == 'thinking';
     final title = !isConnected
         ? 'Ready when you are'
